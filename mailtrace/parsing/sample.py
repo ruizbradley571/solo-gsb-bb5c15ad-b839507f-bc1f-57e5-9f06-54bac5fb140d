@@ -193,3 +193,42 @@ Subject: DKIM coverage demo
 Message-ID: <dkim-demo@example.com>
 """
 
+# 接收链可信边界示例：
+# 头部自上而下的 by 主机为
+#   edge.internal.corp -> gw2.internal.corp -> relay2.partner.example
+#   -> gw2.internal.corp（边界之外再次出现本组织主机名：外部主机冒用 /
+#      伪造的 Received，不得重新接入可信链）-> edge.external.example
+# 本组织名单 edge.internal.corp / gw2.internal.corp 命中前两跳，
+# 边界在第 3 跳（relay2.partner.example），最后可信跳（第 2 跳）记录的
+# from 主机 gateway.partner.example 与对端 IP 203.0.113.55 即外部交接点；
+# 第 4 跳 by 虽再次命中名单，也明确标记为“边界之后，不重新接入”。
+SAMPLE_HEADERS_TRUST = """\
+Received: from gw2.internal.corp (gw2.internal.corp [10.20.0.2])
+\tby edge.internal.corp (Postfix) with ESMTPS id A101
+\tfor <user@corp.example>; Thu, 24 Sep 2026 03:05:10 +0000
+Received: from gateway.partner.example (gateway.partner.example [203.0.113.55])
+\tby gw2.internal.corp (Postfix) with ESMTP id B202
+\tfor <user@corp.example>; Thu, 24 Sep 2026 03:04:30 +0000
+Received: from relay1.external.example (relay1.external.example [198.51.100.20])
+\tby relay2.partner.example (Postfix) with ESMTP id C303
+\tfor <user@corp.example>; Thu, 24 Sep 2026 03:03:50 +0000
+Received: from edge.external.example (edge.external.example [192.0.2.77])
+\tby gw2.internal.corp (Postfix) with ESMTP id D404
+\tfor <user@corp.example>; Thu, 24 Sep 2026 03:03:00 +0000
+Received: from sender.external.example (sender.external.example [192.0.2.90])
+\tby edge.external.example (Postfix) with ESMTP id E505
+\tfor <user@corp.example>; Thu, 24 Sep 2026 03:02:10 +0000
+Date: Thu, 24 Sep 2026 03:02:00 +0000
+From: Sender <sender@external.example>
+To: User <user@corp.example>
+Subject: Trust boundary demo
+Message-ID: <trust-demo@external.example>
+"""
+
+# 本组织接收服务器主机名示例名单（每行一个；末尾点演示规范化去重）
+SAMPLE_TRUSTED_HOSTS = """\
+edge.internal.corp
+GW2.Internal.Corp.
+"""
+
+

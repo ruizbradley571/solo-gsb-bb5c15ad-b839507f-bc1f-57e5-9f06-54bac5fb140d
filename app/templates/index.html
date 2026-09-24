@@ -240,6 +240,40 @@
     color: #bae6fd; border-radius: 10px; padding: 10px 14px;
     margin: 12px 0 0; font-size: 13px;
   }
+
+  /* 接收链可信边界 */
+  .btn-trust { background: #22d3ee; color: #083344; }
+  .trust-list { margin-top: 10px; display: grid; gap: 10px; }
+  .trust-row {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 12px 16px;
+  }
+  .trust-row.trusted { border-left: 4px solid var(--ok); }
+  .trust-row.boundary {
+    border-left: 4px solid var(--error);
+    background: rgba(248, 113, 113, 0.08);
+  }
+  .trust-row.outside { border-left: 4px solid var(--line); opacity: 0.82; }
+  .trust-idx {
+    font-weight: 700; border-radius: 999px; padding: 1px 10px;
+    font-size: 12.5px; background: var(--panel-2); color: var(--text);
+  }
+  .trust-badge {
+    display: inline-block; border-radius: 999px; padding: 1px 10px;
+    font-size: 12px; font-weight: 700; white-space: nowrap;
+  }
+  .trust-badge.t-ok { background: var(--ok); color: #052e1b; }
+  .trust-badge.t-boundary { background: var(--error); color: #450a0a; }
+  .trust-badge.t-out { background: var(--panel-2); color: var(--muted); }
+  .trust-badge.t-reentry { background: var(--warn); color: #422006; }
+  .trust-msg.trust-ok {
+    background: #0f2e22; border-color: var(--ok); color: #a7f3d0;
+  }
+  .trust-msg.trust-bad {
+    background: #3b1d24; border-color: var(--error); color: #fecdd3;
+  }
+  .handoff-card { border: 1px solid var(--accent); }
+  .handoff-card strong { color: var(--accent); }
 </style>
 </head>
 <body>
@@ -311,6 +345,31 @@
       <button class="btn-ghost" type="button" id="fillDkimSample">填入示例</button>
       <button class="btn-ghost" type="button" id="clearDkim">清空</button>
       <span class="hint" style="align-self:center;">也可调用 <code>POST /api/dkim/coverage</code>（JSON：<code>{"headers": "..."}</code>）</span>
+    </div>
+  </form>
+
+  <h2 class="section-title">🔗 接收链可信边界（单封邮件）</h2>
+  <p class="subtitle" style="margin-bottom:10px;">
+    粘贴单封邮件的原始头部，并填写<strong>本组织接收服务器主机名名单</strong>（每行一个，
+    忽略大小写与末尾点）。系统复用同一套 Received 解析，从头部<strong>最上方</strong>
+    （最终接收服务器最新追加的一条）开始向下逐跳检查 <code>by</code> 主机名：
+    只有<strong>自顶端连续命中</strong>名单的跳才标为可信，首个未命中或缺少
+    <code>by</code> 的跳即为<strong>可信边界</strong>；边界之后即使再命中名单也
+    <strong>不会重新接入</strong>。页面展示每跳可信状态、边界位置，以及最后可信跳
+    记录的 <code>from</code> 主机与对端 IP（外部交接点）。顶端未命中或没有
+    Received 时明确提示无法建立可信链。
+  </p>
+  <form method="post" action="/trust-boundary" id="trustForm">
+    <textarea name="headers_trust" id="headers_trust" style="min-height:220px;"
+      placeholder="粘贴单封邮件完整原始头部（含多个 Received 字段，最上方为最终接收服务器）……">{{ headers_trust or '' }}</textarea>
+    <label class="input-label" for="trusted_hosts">本组织接收服务器主机名名单（每行一个，也可用逗号 / 空格分隔）</label>
+    <textarea name="trusted_hosts" id="trusted_hosts" style="min-height:88px;"
+      placeholder="edge.internal.corp&#10;gw2.internal.corp">{{ trusted_hosts_text or '' }}</textarea>
+    <div class="toolbar">
+      <button class="btn-trust" type="submit">分析可信边界</button>
+      <button class="btn-ghost" type="button" id="fillTrustSample">填入示例</button>
+      <button class="btn-ghost" type="button" id="clearTrust">清空</button>
+      <span class="hint" style="align-self:center;">也可调用 <code>POST /api/analyze/trust-boundary</code>（JSON：<code>{"headers": "...", "trusted_hosts": ["..."]}</code>）</span>
     </div>
   </form>
 
@@ -560,6 +619,99 @@
           （RFC 6376：重复字段名不按集合合并，多副本同名头从最新一条开始占用）。
           当前被审计的 DKIM-Signature 自身不参与匹配；字段位置按头部出现先后从 1 计数。
         </p>
+      {% endif %}
+    {% endif %}
+  {% endif %}
+
+  {% if trust %}
+    {% if trust.error %}
+      <div class="banner">{{ trust.error }}</div>
+    {% else %}
+      <h2 style="font-size:18px;">接收链可信边界结果</h2>
+      <div class="stats">
+        <div class="stat">
+          <div class="num {% if trust.status == 'established' %}ok{% else %}error{% endif %}">{{ trust.status_label }}</div>
+          <div class="label">可信链状态</div>
+        </div>
+        <div class="stat"><div class="num ok">{{ trust.trusted_count }}</div><div class="label">连续可信跳（自顶端）</div></div>
+        <div class="stat"><div class="num {% if trust.untrusted_count %}error{% endif %}">{{ trust.untrusted_count }}</div><div class="label">边界之外跳数</div></div>
+        <div class="stat">
+          <div class="num {% if trust.boundary %}warn{% else %}ok{% endif %}">{% if trust.boundary %}第 {{ trust.boundary.top_index }} 跳{% else %}无边界{% endif %}</div>
+          <div class="label">边界位置（头部自上而下）</div>
+        </div>
+      </div>
+
+      <div class="banner trust-msg {% if trust.status == 'established' %}trust-ok{% else %}trust-bad{% endif %}">{{ trust.message }}</div>
+
+      {% if trust.last_trusted_hop %}
+      <div class="card handoff-card">
+        <h2>🔀 外部交接点（最后可信跳记录）</h2>
+        <div class="hop-grid">
+          <div>
+            <span class="k">最后可信跳</span>头部自上而下第
+            <strong>{{ trust.last_trusted_hop.top_index }}</strong> 跳
+            （<code>by {{ trust.last_trusted_hop.by_host or '（缺失）' }}</code>）
+          </div>
+          <div><span class="k">对端 from 主机</span>
+            {% if trust.last_trusted_hop.from_host %}<strong>{{ trust.last_trusted_hop.from_host }}</strong>
+            {% else %}<span class="hint">该跳未记录 from 主机</span>{% endif %}
+          </div>
+          <div><span class="k">对端 IP</span>
+            {% if trust.last_trusted_hop.ip %}<strong>{{ trust.last_trusted_hop.ip }}</strong>
+            {% else %}<span class="hint">未解析到对端 IP</span>{% endif %}
+          </div>
+          <div><span class="k">接收时间（UTC）</span>{{ trust.last_trusted_hop.time_utc or '—' }}</div>
+        </div>
+        <p class="hint" style="margin:8px 0 0;">
+          这是本组织接收服务器在可信链最外侧一跳中记录的来源主机 / IP，
+          即邮件从外部进入本组织的交接位置；边界跳及之后的内容不受信任。
+        </p>
+      </div>
+      {% endif %}
+
+      {% if trust.hops %}
+      <div class="trust-list">
+        {% for hop in trust.hops %}
+        <div class="trust-row {% if hop.trusted %}trusted{% elif hop.is_boundary %}boundary{% else %}outside{% endif %}">
+          <div class="hop-head">
+            <span class="trust-idx">头部第 {{ hop.top_index }} 跳</span>
+            {% if hop.trusted %}
+              <span class="trust-badge t-ok">✓ 可信</span>
+            {% elif hop.is_boundary %}
+              <span class="trust-badge t-boundary">⛔ 可信边界（首未命中）</span>
+            {% else %}
+              <span class="trust-badge t-out">✗ 不可信（边界之外）</span>
+            {% endif %}
+            {% if hop.reentry_listed %}
+              <span class="trust-badge t-reentry">by 命中名单但不重新接入</span>
+            {% endif %}
+            <span class="hint">投递方向第 {{ hop.path_index }} 跳</span>
+          </div>
+          <div class="hop-grid">
+            <div><span class="k">by</span>
+              {% if hop.by_host %}<code>{{ hop.by_host }}</code>
+                {% if hop.by_listed %}<span class="diff-ok">命中名单</span>
+                {% else %}<span class="time-bad">不在名单内</span>{% endif %}
+              {% else %}<span class="time-bad">缺少 by 主机名</span>{% endif %}
+            </div>
+            <div><span class="k">from</span>{{ hop.from_host or '—' }}</div>
+            <div><span class="k">对端 IP</span>{{ hop.ip or '—' }}</div>
+            <div><span class="k">时间（UTC）</span>{{ hop.time_utc or '—' }}</div>
+          </div>
+          <details>
+            <summary>查看原始 Received 字段（保留折行）</summary>
+            <pre class="raw">{{ hop.raw }}</pre>
+          </details>
+        </div>
+        {% endfor %}
+      </div>
+      <p class="legend">
+        检查口径：复用单封分析的 Received 解析结果，按<strong>头部书写顺序</strong>
+        （最上方 = 最终接收服务器）逐跳检查 <code>by</code> 主机名；仅自顶端
+        <strong>连续命中</strong>本组织名单（忽略大小写与末尾点）的跳为可信，
+        首个未命中 / 缺少 <code>by</code> 的跳闭合可信边界，其后所有跳
+        （含再次命中名单者）均不再接入可信链。
+      </p>
       {% endif %}
     {% endif %}
   {% endif %}
@@ -849,6 +1001,18 @@
   document.getElementById('clearDkim').addEventListener('click', () => {
     taDkim.value = '';
     taDkim.focus();
+  });
+
+  const taTrust = document.getElementById('headers_trust');
+  const taHosts = document.getElementById('trusted_hosts');
+  document.getElementById('fillTrustSample').addEventListener('click', () => {
+    taTrust.value = {{ sample_trust | tojson }};
+    taHosts.value = {{ sample_trusted_hosts | tojson }};
+  });
+  document.getElementById('clearTrust').addEventListener('click', () => {
+    taTrust.value = '';
+    taHosts.value = '';
+    taTrust.focus();
   });
 
   // 单封邮件脱敏分享：POST 当前“头部 A”到 /api/analyze/share，

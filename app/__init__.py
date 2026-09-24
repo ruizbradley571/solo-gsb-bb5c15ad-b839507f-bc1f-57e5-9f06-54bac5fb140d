@@ -8,6 +8,7 @@ from flask import Flask, jsonify, render_template, request
 
 from mailtrace.parsing import (
     analyze_headers,
+    analyze_trust_boundary,
     audit_dkim_coverage,
     batch_delay_analysis,
     build_share_report,
@@ -21,6 +22,8 @@ from mailtrace.parsing.sample import (
     SAMPLE_HEADERS_B,
     SAMPLE_HEADERS_BATCH,
     SAMPLE_HEADERS_DKIM,
+    SAMPLE_HEADERS_TRUST,
+    SAMPLE_TRUSTED_HOSTS,
 )
 
 
@@ -48,6 +51,8 @@ def create_app() -> Flask:
             "sample_batch": SAMPLE_HEADERS_BATCH,
             "sample_arc": SAMPLE_HEADERS_ARC,
             "sample_dkim": SAMPLE_HEADERS_DKIM,
+            "sample_trust": SAMPLE_HEADERS_TRUST,
+            "sample_trusted_hosts": SAMPLE_TRUSTED_HOSTS,
             "max_input_kb": max_input_kb,
         }
         context.update(extra)
@@ -125,6 +130,16 @@ def create_app() -> Flask:
             return {"error": "请先粘贴邮件原始头部（包含 DKIM-Signature 字段）"}
         return audit_dkim_coverage(raw_headers)
 
+    def _do_trust_boundary(raw_headers: str, trusted_hosts) -> dict:
+        error = _check_size(raw_headers)
+        if error:
+            return {"error": error}
+        if not raw_headers.strip():
+            return {
+                "error": "请先粘贴邮件原始头部（包含至少一个 Received 字段）"
+            }
+        return analyze_trust_boundary(raw_headers, trusted_hosts)
+
     @app.post("/analyze")
     def analyze_form():
         raw_headers = request.form.get("headers_a", "") or request.form.get("headers", "")
@@ -178,6 +193,17 @@ def create_app() -> Flask:
         raw_headers = request.form.get("headers_dkim", "")
         dkim = _do_dkim_coverage(raw_headers)
         return render_index(headers_dkim=raw_headers, dkim=dkim)
+
+    @app.post("/trust-boundary")
+    def trust_boundary_form():
+        raw_headers = request.form.get("headers_trust", "")
+        trusted_hosts = request.form.get("trusted_hosts", "")
+        trust = _do_trust_boundary(raw_headers, trusted_hosts)
+        return render_index(
+            headers_trust=raw_headers,
+            trusted_hosts_text=trusted_hosts,
+            trust=trust,
+        )
 
     @app.post("/api/analyze")
     def analyze_api():
@@ -265,6 +291,34 @@ def create_app() -> Flask:
         if not isinstance(raw_headers, str):
             return jsonify({"error": "headers 必须是字符串"}), 400
         result = _do_dkim_coverage(raw_headers)
+        status = 400 if result.get("error") else 200
+        return jsonify(result), status
+
+    @app.post("/api/analyze/trust-boundary")
+    def trust_boundary_api():
+        if request.is_json:
+            payload = request.get_json(silent=True)
+            if not isinstance(payload, dict):
+                return jsonify(
+                    {"error": "请求体必须是 JSON 对象，含 headers 与 trusted_hosts"}
+                ), 400
+            raw_headers = payload.get("headers", "")
+            trusted_hosts = payload.get("trusted_hosts", [])
+        else:
+            raw_headers = request.form.get("headers", "")
+            # 表单只支持每行一个主机名的文本（也兼容逗号 / 空白分隔）
+            trusted_hosts = request.form.get("trusted_hosts", "")
+        if not isinstance(raw_headers, str):
+            return jsonify({"error": "headers 必须是字符串"}), 400
+        if not isinstance(trusted_hosts, (str, list, tuple)) or (
+            isinstance(trusted_hosts, list)
+            and not all(isinstance(item, str) for item in trusted_hosts)
+        ):
+            return jsonify(
+                {"error": "trusted_hosts 必须是主机名字符串数组，或每行一个主机名的字符串"}
+            ), 400
+        result = _do_trust_boundary(raw_headers, trusted_hosts)
+        # 空名单、空白头部等输入错误为 400；no_received / untrusted_top 为 200
         status = 400 if result.get("error") else 200
         return jsonify(result), status
 
