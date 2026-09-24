@@ -41,6 +41,16 @@
   以及 `From` / `Subject` / `To` / `Date` 中未被该签名覆盖的实际副本；
   完全没有签名时报告**“无 DKIM 签名”**（独立状态），缺失或空 `h=` 标为
   异常。结果**只表示字段覆盖，不宣称签名真伪**（不验证 `b=` 签名值）。
+- **接收链可信边界**：在单封邮件分析中粘贴一份原始头部，并给出
+  **本组织接收服务器主机名名单**（每行一个 `by` 主机名，或调用
+  `POST /api/analyze/trust-boundary` 传 `trusted_hosts` 数组）。系统复用
+  同一套 Received 解析，从**头部最上方**（最终接收服务器）开始向下逐跳
+  检查 `by` 主机名：只有**自顶端连续命中**名单的跳标为可信，首个
+  `by` 未命中或缺少 `by` 的跳即为**可信边界**，其后即使再命中名单也
+  **不会重新接入**。页面与 API 展示每跳可信状态、边界位置，以及
+  **最后可信跳**记录的 `from` 主机与对端 IP（外部交接点）；主机名比较
+  忽略大小写与末尾点。空名单报输入错误（400），顶端即未命中或头部中
+  没有 `Received` 字段时明确返回 `status: "no_chain"`（无法建立可信链）。
 
 解析核心（`mailtrace/`）仅依赖 Python 标准库，可脱离 Flask 单独使用或被其他程序导入。
 
@@ -80,14 +90,20 @@ docker build -t mailtrace . && docker run --rm -p 8000:8000 mailtrace
 
 | 用途 | 地址（默认 `http://localhost:8000`） |
 | --- | --- |
-| 页面（投递路径 / 对照 / 慢段归因 / ARC / DKIM 覆盖） | `http://localhost:8000/` |
+| 页面（投递路径 / 对照 / 慢段归因 / ARC / DKIM 覆盖 / 可信边界） | `http://localhost:8000/` |
 | 单份头部分析 | `POST http://localhost:8000/api/analyze` |
 | 脱敏分享报告 | `POST http://localhost:8000/api/analyze/share` |
+| **接收链可信边界** | `POST http://localhost:8000/api/analyze/trust-boundary` |
 | 双邮件头路径对照 | `POST http://localhost:8000/api/compare` |
 | 多封慢段归因 | `POST http://localhost:8000/api/batch-delays` |
 | ARC 链结构检查 | `POST http://localhost:8000/api/arc/check` |
 | **DKIM 头字段覆盖审计** | `POST http://localhost:8000/api/dkim/coverage` |
 | 健康检查 | `GET http://localhost:8000/healthz` |
+
+> 以上端口默认为 **8000**，可用 `HOST_PORT` 修改宿主机映射端口
+> （容器内服务固定监听 8000，见下文“访问端口”），例如
+> `HOST_PORT=9000` 后页面地址为 `http://localhost:9000/`、
+> 可信边界 API 为 `http://localhost:9000/api/analyze/trust-boundary`。
 
 ---
 
@@ -115,6 +131,12 @@ docker build -t mailtrace . && docker run --rm -p 8000:8000 mailtrace
    `h=` 重复字段、countersignature 与被注入的重复 `To` 副本），点击
    **审计 DKIM 覆盖**：页面逐条展示每个 `h=` 项匹配到的字段位置、未匹配
    项，以及 `From` / `Subject` / `To` / `Date` 未被该签名覆盖的实际副本。
+8. 需要定位**外部交接点 / 可信边界**时，把一封邮件的原始头部粘贴到
+   **“单封邮件接收链可信边界”** 文本框，并在**本组织接收服务器主机名名单**
+   中每行填写一个本组织接收服务器的 `by` 主机名（可点“填入示例”查看
+   完整示例，其中最后一跳的 `by` 伪造为本组织主机名），点击
+   **检查可信边界**：页面按头部自上而下顺序逐跳标注可信 / 不可信 / 边界，
+   并在“外部交接点”卡片中给出最后可信跳的 `from` 主机与对端 IP。
 
 慢段归因的聚合口径：
 
@@ -384,6 +406,71 @@ curl -s -X POST http://localhost:8000/api/dkim/coverage \
   `MAX_INPUT_KB` 上限返回 400；头部中完全没有 `DKIM-Signature` 时返回
   200 且 `status` 为 `none`。
 
+接收链可信边界（本地启动后地址为 `http://localhost:8000/api/analyze/trust-boundary`，
+端口随 `HOST_PORT` 变化，见下文“访问端口”）。`trusted_hosts` 为
+本组织接收服务器主机名数组（也可传换行 / 逗号 / 分号分隔的字符串），
+主机名比较忽略大小写与末尾点：
+
+```bash
+curl -s -X POST http://localhost:8000/api/analyze/trust-boundary \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "headers": "Received: from edge.example by mailbox.example; Thu, 24 Sep 2026 02:16:00 +0000\nReceived: from relay.external by edge.example; Thu, 24 Sep 2026 02:15:30 +0000\nReceived: from out.example by relay.external; Thu, 24 Sep 2026 02:14:00 +0000",
+        "trusted_hosts": ["mailbox.example", "edge.example"]
+      }'
+```
+
+返回结构（`hops` 按**头部原文自上而下**编号，即最终接收服务器为第 1 跳；
+页面表格与该顺序一致）：
+
+```json
+{
+  "status": "established",
+  "status_label": "可信链已建立",
+  "hop_count": 3,
+  "trusted_count": 2,
+  "trusted_hosts": ["mailbox.example", "edge.example"],
+  "boundary": {
+    "hop_index": 3,
+    "node": "relay.external",
+    "by_host": "relay.external",
+    "reason": "by_not_listed",
+    "reason_label": "by 主机不在本组织接收服务器名单中"
+  },
+  "last_trusted": {
+    "hop_index": 2,
+    "by_host": "edge.example",
+    "from_host": "relay.external",
+    "ip": null
+  },
+  "hops": [
+    {"hop_index": 1, "status": "trusted", "trusted": true, "listed": true,
+     "by_host": "mailbox.example", "from_host": "edge.example", "ip": null,
+     "reason": null, "rejoin_blocked": false},
+    {"hop_index": 2, "status": "trusted", "trusted": true, "listed": true,
+     "by_host": "edge.example", "from_host": "relay.external", "ip": null,
+     "reason": null, "rejoin_blocked": false},
+    {"hop_index": 3, "status": "untrusted", "trusted": false, "listed": false,
+     "by_host": "relay.external", "from_host": "out.example", "ip": null,
+     "reason": "by_not_listed", "rejoin_blocked": false}
+  ],
+  "message": "可信链含 2 跳；边界位于头部自上而下第 3 跳（relay.external）。……"
+}
+```
+
+- 只有自顶端起**连续命中**名单的跳 `trusted` 为 `true`；首个未命中
+  （`reason: "by_not_listed"`）或缺少 `by`（`reason: "missing_by"`）
+  的跳写入 `boundary`，其后所有跳 `reason` 均为 `"after_boundary"`；
+  若边界之后某跳的 `by` 再次命中名单，该跳 `listed=true`、
+  `rejoin_blocked=true`，仍为不可信，不会重新接入；
+- `last_trusted` 是可信链上最靠近边界的一跳，其 `from_host` / `ip`
+  即外部交接点；全部跳均命中名单时 `boundary` 为 `null`；
+- 名单为空 / 缺失 / 类型错误、`headers` 为空或超过 `MAX_INPUT_KB`
+  上限时返回 **400** 及明确 `error`；
+- 头部没有任何 `Received` 字段，或**顶端第一条** Received 即未命中 /
+  缺少 `by` 时返回 **200** 且 `status` 为 `"no_chain"`
+  （`trusted_count` 为 0、`last_trusted` 为 `null`），表示无法建立可信链。
+
 健康检查：`GET http://localhost:8000/healthz`。
 
 ---
@@ -464,19 +551,21 @@ python -m unittest discover -s tests -v
 │       ├── share.py        # 单封脱敏分享：H1/IP1 别名化、白名单报告
 │       ├── arc.py          # ARC 链结构检查：i 标签归组、字段齐全性、连续编号、cv 校验
 │       ├── dkim.py         # DKIM h= 头字段覆盖审计：逐条签名、自底部向上匹配、重复字段不合并
-│       └── sample.py       # 页面“填入示例”数据（A / B、批量三份、ARC 及 DKIM 示例）
+│       ├── trust_boundary.py # 接收链可信边界：自头部顶端连续匹配 by 名单、边界与外部交接点
+│       └── sample.py       # 页面“填入示例”数据（A / B、批量三份、ARC、DKIM 及可信边界示例）
 ├── wsgi.py                 # gunicorn / flask 启动入口
 ├── entrypoint.sh           # 容器启动时安装依赖并启动 gunicorn
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
-└── tests/                  # 解析核心、对照、脱敏、慢段归因、ARC 链与 DKIM 覆盖单元测试
+└── tests/                  # 解析核心、对照、脱敏、慢段归因、ARC、DKIM 与可信边界单元测试
     ├── test_parser.py
     ├── test_compare.py
     ├── test_share.py
     ├── test_batch.py
     ├── test_arc.py
-    └── test_dkim.py
+    ├── test_dkim.py
+    └── test_trust_boundary.py
 ```
 
 ## 安全与隐私

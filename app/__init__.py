@@ -8,6 +8,7 @@ from flask import Flask, jsonify, render_template, request
 
 from mailtrace.parsing import (
     analyze_headers,
+    analyze_trust_boundary,
     audit_dkim_coverage,
     batch_delay_analysis,
     build_share_report,
@@ -21,6 +22,12 @@ from mailtrace.parsing.sample import (
     SAMPLE_HEADERS_B,
     SAMPLE_HEADERS_BATCH,
     SAMPLE_HEADERS_DKIM,
+    SAMPLE_HEADERS_TRUST,
+    SAMPLE_TRUST_HOSTS,
+)
+from mailtrace.parsing.trust_boundary import (
+    normalize_host_list,
+    parse_host_list_text,
 )
 
 
@@ -48,6 +55,8 @@ def create_app() -> Flask:
             "sample_batch": SAMPLE_HEADERS_BATCH,
             "sample_arc": SAMPLE_HEADERS_ARC,
             "sample_dkim": SAMPLE_HEADERS_DKIM,
+            "sample_trust": SAMPLE_HEADERS_TRUST,
+            "sample_trust_hosts": SAMPLE_TRUST_HOSTS,
             "max_input_kb": max_input_kb,
         }
         context.update(extra)
@@ -125,6 +134,16 @@ def create_app() -> Flask:
             return {"error": "请先粘贴邮件原始头部（包含 DKIM-Signature 字段）"}
         return audit_dkim_coverage(raw_headers)
 
+    def _do_trust_boundary(raw_headers: str, trusted_hosts: list[str]) -> dict:
+        error = _check_size(raw_headers)
+        if error:
+            return {"error": error}
+        if not raw_headers.strip():
+            return {
+                "error": "请先粘贴邮件原始头部（包含至少一个 Received 字段）"
+            }
+        return analyze_trust_boundary(raw_headers, trusted_hosts)
+
     @app.post("/analyze")
     def analyze_form():
         raw_headers = request.form.get("headers_a", "") or request.form.get("headers", "")
@@ -178,6 +197,18 @@ def create_app() -> Flask:
         raw_headers = request.form.get("headers_dkim", "")
         dkim = _do_dkim_coverage(raw_headers)
         return render_index(headers_dkim=raw_headers, dkim=dkim)
+
+    @app.post("/trust-boundary")
+    def trust_boundary_form():
+        raw_headers = request.form.get("headers_trust", "")
+        host_text = request.form.get("trusted_hosts", "")
+        trusted = parse_host_list_text(host_text)
+        trust = _do_trust_boundary(raw_headers, trusted)
+        return render_index(
+            headers_trust=raw_headers,
+            trusted_hosts_text=host_text,
+            trust=trust,
+        )
 
     @app.post("/api/analyze")
     def analyze_api():
@@ -265,6 +296,39 @@ def create_app() -> Flask:
         if not isinstance(raw_headers, str):
             return jsonify({"error": "headers 必须是字符串"}), 400
         result = _do_dkim_coverage(raw_headers)
+        status = 400 if result.get("error") else 200
+        return jsonify(result), status
+
+    @app.post("/api/analyze/trust-boundary")
+    def trust_boundary_api():
+        if request.is_json:
+            payload = request.get_json(silent=True)
+            if not isinstance(payload, dict):
+                return jsonify(
+                    {"error": "请求体必须是 JSON 对象，含 headers 字符串与 trusted_hosts 主机名数组"}
+                ), 400
+            raw_headers = payload.get("headers", "")
+            trusted_raw = payload.get("trusted_hosts", [])
+            if isinstance(trusted_raw, str):
+                trusted = parse_host_list_text(trusted_raw)
+            elif isinstance(trusted_raw, list) and all(
+                isinstance(item, str) for item in trusted_raw
+            ):
+                trusted = trusted_raw
+            else:
+                return jsonify(
+                    {"error": "trusted_hosts 必须是主机名字符串数组（每项一个 by 主机名）"}
+                ), 400
+        else:
+            raw_headers = request.form.get("headers", "")
+            trusted = parse_host_list_text(request.form.get("trusted_hosts", ""))
+        if not isinstance(raw_headers, str):
+            return jsonify({"error": "headers 必须是字符串"}), 400
+        if not normalize_host_list(trusted):
+            return jsonify(
+                {"error": "trusted_hosts 不能为空：请提供至少一个本组织接收服务器主机名"}
+            ), 400
+        result = _do_trust_boundary(raw_headers, trusted)
         status = 400 if result.get("error") else 200
         return jsonify(result), status
 

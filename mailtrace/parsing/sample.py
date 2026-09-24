@@ -193,3 +193,36 @@ Subject: DKIM coverage demo
 Message-ID: <dkim-demo@example.com>
 """
 
+
+
+# 可信边界示例：头部最上方两跳由本组织接收服务器（mailbox / edge）
+# 连续接管；第三跳 relay.provider.example 不在名单内，即为可信边界，
+# 最后可信跳 edge.final.example 记录的 from 主机 relay.provider.example
+# 与对端 IP 203.0.113.22 即外部交接点。最下方一跳的 by 伪造为
+# edge.final.example（再次命中名单），用于演示“边界之后不得重新接入”。
+SAMPLE_HEADERS_TRUST = """\
+Return-Path: <sender@example.com>
+Received: from edge.final.example (edge.final.example [198.51.100.10])
+\tby mailbox.final.example (Postfix) with LMTP id T001
+\tfor <user@final.example>; Thu, 24 Sep 2026 02:16:00 +0000
+Received: from relay.provider.example (relay.provider.example [203.0.113.22])
+\tby edge.final.example (Postfix) with ESMTPS id T002
+\tfor <user@final.example>; Thu, 24 Sep 2026 02:15:30 +0000
+Received: from outgoing.example.org (outgoing.example.org [192.0.2.50])
+\tby relay.provider.example (Postfix) with ESMTP id T003
+\tfor <user@final.example>; Thu, 24 Sep 2026 02:14:00 +0000
+Received: from smtp01.corp.example.net (smtp01.corp.example.net [198.51.100.77])
+\tby edge.final.example with ESMTP id T004
+\tfor user@final.example; Thu, 24 Sep 2026 02:13:00 +0000
+Date: Thu, 24 Sep 2026 02:12:40 +0000
+From: Sender <sender@example.com>
+To: User <user@final.example>
+Subject: Trust boundary demo
+Message-ID: <trust-demo@example.com>
+"""
+
+# 可信边界示例默认填入的本组织接收服务器名单（每行一个主机名）。
+SAMPLE_TRUST_HOSTS = """\
+mailbox.final.example
+edge.final.example
+"""
